@@ -82,7 +82,20 @@ else
 LOCAL_SRC_FILES += hwcomposer.cpp
 endif
 
+
+ifeq ($(TARGET_PRODUCT),hikey960)
+LOCAL_CPPFLAGS += -DUSE_HISI_IMPORTER
+LOCAL_SRC_FILES += platformhisi.cpp
+LOCAL_C_INCLUDES += device/linaro/hikey/gralloc960/
+else
+ifeq ($(TARGET_PRODUCT),hikey)
+LOCAL_CPPFLAGS += -DUSE_HISI_IMPORTER
+LOCAL_SRC_FILES += platformhisi.cpp
+LOCAL_C_INCLUDES += device/linaro/hikey/gralloc/
+else
 LOCAL_CPPFLAGS += -DUSE_DRM_GENERIC_IMPORTER
+endif
+endif
 
 LOCAL_MODULE := hwcomposer.drm
 LOCAL_MODULE_TAGS := optional
