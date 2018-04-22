@@ -288,6 +288,11 @@ int DrmResources::TryEncoderForDisplay(int display, DrmEncoder *enc) {
 
 int DrmResources::CreateDisplayPipe(DrmConnector *connector) {
   int display = connector->display();
+
+  /* Skip and avoid error for disconnected */
+  if (connector->state() == DRM_MODE_DISCONNECTED)
+    return 0;
+
   /* Try to use current setup first */
   if (connector->encoder()) {
     int ret = TryEncoderForDisplay(display, connector->encoder());
