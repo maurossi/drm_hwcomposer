@@ -23,7 +23,7 @@
 #include <linux/netlink.h>
 #include <sys/socket.h>
 
-#include <cutils/log.h>
+#include <log/log.h>
 #include <xf86drm.h>
 #include <assert.h>
 
