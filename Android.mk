@@ -26,7 +26,7 @@ common_drm_hwcomposer_cflags := \
     -Wno-unused-variable \
 
 # =====================
-# libdrmhwc_utils.a
+# libdrmhwc_utils_cros.a
 # =====================
 include $(CLEAR_VARS)
 
@@ -35,7 +35,7 @@ LOCAL_SRC_FILES := \
 
 LOCAL_CFLAGS := $(common_drm_hwcomposer_cflags)
 
-LOCAL_MODULE := libdrmhwc_utils
+LOCAL_MODULE := libdrmhwc_utils_cros
 LOCAL_VENDOR_MODULE := true
 
 include $(BUILD_STATIC_LIBRARY)
@@ -56,7 +56,7 @@ LOCAL_SHARED_LIBRARIES := \
 	libui \
 	libutils
 
-LOCAL_STATIC_LIBRARIES := libdrmhwc_utils
+LOCAL_STATIC_LIBRARIES := libdrmhwc_utils_cros
 
 LOCAL_C_INCLUDES := \
 	system/core/libsync
