@@ -17,14 +17,14 @@ ifeq ($(strip $(BOARD_USES_DRM_HWCOMPOSER)),true)
 LOCAL_PATH := $(call my-dir)
 
 # =====================
-# libdrmhwc_utils.a
+# libdrmhwc_utils_robh.a
 # =====================
 include $(CLEAR_VARS)
 
 LOCAL_SRC_FILES := \
 	worker.cpp
 
-LOCAL_MODULE := libdrmhwc_utils
+LOCAL_MODULE := libdrmhwc_utils_robh
 
 include $(BUILD_STATIC_LIBRARY)
 
@@ -42,7 +42,7 @@ LOCAL_SHARED_LIBRARIES := \
 	libui \
 	libutils
 
-LOCAL_STATIC_LIBRARIES := libdrmhwc_utils
+LOCAL_STATIC_LIBRARIES := libdrmhwc_utils_robh
 
 LOCAL_C_INCLUDES := \
 	system/core/libsync
