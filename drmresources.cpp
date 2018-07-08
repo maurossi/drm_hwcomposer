@@ -162,9 +162,9 @@ int DrmResources::Init() {
     if (conn->state() == DRM_MODE_CONNECTED && conn->internal() && !found_primary) {
       conn->set_display(0);
       found_primary = true;
-    } else {
-      conn->set_display(display_num);
-      ++display_num;
+  //} else {
+  //  conn->set_display(display_num);
+  //  ++display_num;
     }
   }
 
