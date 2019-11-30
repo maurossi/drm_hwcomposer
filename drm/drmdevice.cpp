@@ -261,10 +261,12 @@ std::tuple<int, int> DrmDevice::Init(const char *path, int num_displays) {
       primary_candidates = make_primary_display_candidates(connectors_);
   if (!primary_candidates.empty() && !found_primary) {
     DrmConnector &conn = **std::begin(primary_candidates);
-    conn.set_display(num_displays);
-    displays_[num_displays] = num_displays;
-    ++num_displays;
-    found_primary = true;
+    if (conn.state() == DRM_MODE_CONNECTED) {
+      conn.set_display(num_displays);
+      displays_[num_displays] = num_displays;
+      ++num_displays;
+      found_primary = true;
+    }
   } else {
     ALOGE(
         "Failed to find primary display from \"hwc.drm.primary_display_order\" "
@@ -275,12 +277,12 @@ std::tuple<int, int> DrmDevice::Init(const char *path, int num_displays) {
   // for the others assign consecutive display_numbers.
   for (auto &conn : connectors_) {
     if (conn->external() || conn->internal()) {
-      if (!found_primary) {
+      if (conn->state() == DRM_MODE_CONNECTED && !found_primary) {
         conn->set_display(num_displays);
         displays_[num_displays] = num_displays;
         found_primary = true;
         ++num_displays;
-      } else if (conn->display() < 0) {
+      } else if (conn->state() == DRM_MODE_CONNECTED && conn->display() < 0) {
         conn->set_display(num_displays);
         displays_[num_displays] = num_displays;
         ++num_displays;
