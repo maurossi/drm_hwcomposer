@@ -97,7 +97,7 @@ else ifeq ($(TARGET_PRODUCT),hikey)
 LOCAL_CPPFLAGS += -DUSE_HISI_IMPORTER
 LOCAL_SRC_FILES += platformhisi.cpp
 LOCAL_C_INCLUDES += device/linaro/hikey/gralloc/
-else ifeq ($(strip $(BOARD_DRM_HWCOMPOSER_BUFFER_IMPORTER)),minigbm)
+else ifeq ($(TARGET_BOARD_PLATFORM),android-x86)
 LOCAL_SRC_FILES += platformminigbm.cpp
 LOCAL_C_INCLUDES += external/minigbm/cros_gralloc/
 else
