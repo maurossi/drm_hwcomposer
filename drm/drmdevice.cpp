@@ -402,6 +402,7 @@ int DrmDevice::CreateDisplayPipe(DrmConnector *connector) {
   /* Try to use current setup first */
   if (connector->encoder()) {
     int ret = TryEncoderForDisplay(display, connector->encoder());
+    ALOGE("MAUROSSI current setup TryEncoderForDisplay(display=%d, enc=%d) ret=%d", display, connector->encoder()->id(), ret);
     if (!ret) {
       return 0;
     } else if (ret != -EAGAIN) {
@@ -412,6 +413,7 @@ int DrmDevice::CreateDisplayPipe(DrmConnector *connector) {
 
   for (DrmEncoder *enc : connector->possible_encoders()) {
     int ret = TryEncoderForDisplay(display, enc);
+    ALOGE("MAUROSSI for cycle TryEncoderForDisplay(display=%d, enc=%d) ret=%d", display, enc->id(), ret);
     if (!ret) {
       connector->set_encoder(enc);
       return 0;
@@ -419,6 +421,7 @@ int DrmDevice::CreateDisplayPipe(DrmConnector *connector) {
       ALOGE("Could not set mode %d/%d", display, ret);
       return ret;
     }
+    ALOGE("MAUROSSI Last error returned by TryEncoderForDisplay(display=%d) ret=%d", display, ret);
   }
   ALOGE("Could not find a suitable encoder/crtc for display %d",
         connector->display());
