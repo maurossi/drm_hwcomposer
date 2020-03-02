@@ -283,10 +283,10 @@ std::tuple<int, int> DrmDevice::Init(const char *path, int num_displays) {
         displays_[num_displays] = num_displays;
         found_primary = true;
         ++num_displays;
-      } else if (conn->display() < 0) {
-        conn->set_display(num_displays);
-        displays_[num_displays] = num_displays;
-        ++num_displays;
+//    } else if (conn->display() < 0) {
+//      conn->set_display(num_displays);
+//      displays_[num_displays] = num_displays;
+//      ++num_displays;
       }
     }
   }
