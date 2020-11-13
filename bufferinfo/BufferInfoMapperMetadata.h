@@ -27,8 +27,6 @@ class BufferInfoMapperMetadata : public BufferInfoGetter {
 
   int ConvertBoInfo(buffer_handle_t handle, hwc_drm_bo_t *bo) override;
 
-  int GetFds(buffer_handle_t handle, hwc_drm_bo_t *bo);
-
   static BufferInfoGetter *CreateInstance();
 };
 }  // namespace android
