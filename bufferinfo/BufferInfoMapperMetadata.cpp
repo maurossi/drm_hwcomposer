@@ -114,6 +114,9 @@ int BufferInfoMapperMetadata::ConvertBoInfo(buffer_handle_t handle,
     return err;
   }
 
+  if (bo->format == DRM_FORMAT_ABGR8888)
+    bo->format = DRM_FORMAT_XBGR8888;
+
   err = mapper.getPixelFormatModifier(handle, &bo->modifiers[0]);
   if (err != 0) {
     ALOGE("Failed to get DRM Modifier err=%d", err);
