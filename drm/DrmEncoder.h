@@ -29,32 +29,37 @@ namespace android {
 
 class DrmEncoder {
  public:
-  DrmEncoder(drmModeEncoderPtr e, DrmCrtc *current_crtc,
-             std::vector<DrmCrtc *> possible_crtcs);
+  auto GetId() const -> uint32_t;
+
+  auto GetIndexInResArray() const -> uint32_t {
+    return index_in_res_array_;
+  }
+
+  bool CanClone(DrmEncoder &encoder);
+
+  bool SupportsCrtc(DrmCrtc &crtc);
+
+  auto GetCurrentCrtcId() {
+    return enc_->crtc_id;
+  }
+
+  static auto CreateInstance(DrmDevice &dev, uint32_t encoder_id,
+                             uint32_t index) -> std::unique_ptr<DrmEncoder>;
+
   DrmEncoder(const DrmEncoder &) = delete;
   DrmEncoder &operator=(const DrmEncoder &) = delete;
 
-  uint32_t id() const;
-
-  DrmCrtc *crtc() const;
-  void set_crtc(DrmCrtc *crtc);
-  bool can_bind(int display) const;
-  int display() const;
-
-  const std::vector<DrmCrtc *> &possible_crtcs() const {
-    return possible_crtcs_;
-  }
-  bool CanClone(DrmEncoder *encoder);
-  void AddPossibleClone(DrmEncoder *possible_clone);
+  DrmEncoderOwnerWeak owned;
 
  private:
-  uint32_t id_;
-  DrmCrtc *crtc_;
-  int display_;
+  DrmEncoder(DrmModeEncoderUnique enc, uint32_t index)
+      : enc_(std::move(enc)), index_in_res_array_(index){};
 
-  std::vector<DrmCrtc *> possible_crtcs_;
-  std::set<DrmEncoder *> possible_clones_;
+  DrmModeEncoderUnique enc_;
+
+  const uint32_t index_in_res_array_;
 };
+
 }  // namespace android
 
 #endif  // ANDROID_DRM_ENCODER_H_

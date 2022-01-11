@@ -25,51 +25,30 @@ namespace android {
 
 DrmHwcTwo::DrmHwcTwo() = default;
 
-HWC2::Error DrmHwcTwo::CreateDisplay(hwc2_display_t displ,
-                                     HWC2::DisplayType type) {
-  DrmDevice *drm = resource_manager_.GetDrmDevice(static_cast<int>(displ));
-  if (!drm) {
-    ALOGE("Failed to get a valid drmresource");
-    return HWC2::Error::NoResources;
-  }
-  displays_.emplace(std::piecewise_construct, std::forward_as_tuple(displ),
-                    std::forward_as_tuple(&resource_manager_, drm, displ, type,
-                                          this));
-
-  DrmCrtc *crtc = drm->GetCrtcForDisplay(static_cast<int>(displ));
-  if (!crtc) {
-    ALOGE("Failed to get crtc for display %d", static_cast<int>(displ));
-    return HWC2::Error::BadDisplay;
-  }
-  auto display_planes = std::vector<DrmPlane *>();
-  for (const auto &plane : drm->planes()) {
-    if (plane->GetCrtcSupported(*crtc))
-      display_planes.push_back(plane.get());
-  }
-  displays_.at(displ).Init(&display_planes);
-  return HWC2::Error::None;
-}
-
 HWC2::Error DrmHwcTwo::Init() {
-  int rv = resource_manager_.Init();
-  if (rv) {
-    ALOGE("Can't initialize the resource manager %d", rv);
+  int err = resource_manager_.Init();
+  if (err != 0) {
+    ALOGE("Can't initialize the resource manager %d", err);
     return HWC2::Error::NoResources;
   }
 
-  HWC2::Error ret = HWC2::Error::None;
-  for (int i = 0; i < resource_manager_.GetDisplayCount(); i++) {
-    ret = CreateDisplay(i, HWC2::DisplayType::Physical);
-    if (ret != HWC2::Error::None) {
-      ALOGE("Failed to create display %d with error %d", i, ret);
-      return ret;
-    }
+  uint32_t disp_handle = kPrimaryDisplay;
+  for (auto &conn_pair : resource_manager_.GetAvailableConnectors()) {
+    ALOGI("Registering disp for connector %s",
+          conn_pair.second->object->name().c_str());
+    auto disp = std::make_unique<HwcDisplay>(conn_pair.second->object,
+                                             disp_handle,
+                                             HWC2::DisplayType::Physical, this);
+    displays_[disp_handle] = std::move(disp);
+    disp_handle++;
   }
 
-  resource_manager_.GetUEventListener()->RegisterHotplugHandler(
-      [this] { HandleHotplugUEvent(); });
+  resource_manager_.GetUEventListener()->RegisterHotplugHandler([this] {
+    const std::lock_guard<std::mutex> lock(GetResMan()->GetMasterLock());
+    UpdateAllDiaplaysHotplugState();
+  });
 
-  return ret;
+  return HWC2::Error::None;
 }
 
 HWC2::Error DrmHwcTwo::CreateVirtualDisplay(uint32_t /*width*/,
@@ -96,8 +75,8 @@ void DrmHwcTwo::Dump(uint32_t *outSize, char *outBuffer) {
 
   output << "-- drm_hwcomposer --\n\n";
 
-  for (std::pair<const hwc2_display_t, HwcDisplay> &dp : displays_)
-    output << dp.second.Dump();
+  for (auto &disp : displays_)
+    output << disp.second->Dump();
 
   mDumpString = output.str();
   *outSize = static_cast<uint32_t>(mDumpString.size());
@@ -111,15 +90,13 @@ uint32_t DrmHwcTwo::GetMaxVirtualDisplayCount() {
 HWC2::Error DrmHwcTwo::RegisterCallback(int32_t descriptor,
                                         hwc2_callback_data_t data,
                                         hwc2_function_pointer_t function) {
-  std::unique_lock<std::mutex> lock(callback_lock_);
-
   switch (static_cast<HWC2::Callback>(descriptor)) {
     case HWC2::Callback::Hotplug: {
       hotplug_callback_ = std::make_pair(HWC2_PFN_HOTPLUG(function), data);
-      lock.unlock();
-      const auto &drm_devices = resource_manager_.GetDrmDevices();
-      for (const auto &device : drm_devices)
-        HandleInitialHotplugState(device.get());
+      if (displays_.empty()) {
+        Init();
+      }
+      UpdateAllDiaplaysHotplugState(/*force_send_connected = */ true);
       break;
     }
     case HWC2::Callback::Refresh: {
@@ -142,52 +119,21 @@ HWC2::Error DrmHwcTwo::RegisterCallback(int32_t descriptor,
   return HWC2::Error::None;
 }
 
-void DrmHwcTwo::HandleDisplayHotplug(hwc2_display_t displayid, int state) {
-  const std::lock_guard<std::mutex> lock(callback_lock_);
-
+void DrmHwcTwo::SendHotplugEventToClient(hwc2_display_t displayid,
+                                         bool connected) {
   if (hotplug_callback_.first != nullptr &&
       hotplug_callback_.second != nullptr) {
+    resource_manager_.GetMasterLock().unlock();
     hotplug_callback_.first(hotplug_callback_.second, displayid,
-                            state == DRM_MODE_CONNECTED
-                                ? HWC2_CONNECTION_CONNECTED
-                                : HWC2_CONNECTION_DISCONNECTED);
+                            connected ? HWC2_CONNECTION_CONNECTED
+                                      : HWC2_CONNECTION_DISCONNECTED);
+    resource_manager_.GetMasterLock().lock();
   }
 }
 
-void DrmHwcTwo::HandleInitialHotplugState(DrmDevice *drmDevice) {
-  for (const auto &conn : drmDevice->connectors()) {
-    if (conn->state() != DRM_MODE_CONNECTED)
-      continue;
-    HandleDisplayHotplug(conn->display(), conn->state());
-  }
-}
-
-void DrmHwcTwo::HandleHotplugUEvent() {
-  for (const auto &drm : resource_manager_.GetDrmDevices()) {
-    for (const auto &conn : drm->connectors()) {
-      drmModeConnection old_state = conn->state();
-      drmModeConnection cur_state = conn->UpdateModes()
-                                        ? DRM_MODE_UNKNOWNCONNECTION
-                                        : conn->state();
-
-      if (cur_state == old_state)
-        continue;
-
-      ALOGI("%s event for connector %u on display %d",
-            cur_state == DRM_MODE_CONNECTED ? "Plug" : "Unplug", conn->id(),
-            conn->display());
-
-      int display_id = conn->display();
-      if (cur_state == DRM_MODE_CONNECTED) {
-        auto &display = displays_.at(display_id);
-        display.ChosePreferredConfig();
-      } else {
-        auto &display = displays_.at(display_id);
-        display.ClearDisplay();
-      }
-
-      HandleDisplayHotplug(display_id, cur_state);
-    }
+void DrmHwcTwo::UpdateAllDiaplaysHotplugState(bool force_send_connected) {
+  for (auto &display : displays_) {
+    display.second->HandleHotplug(force_send_connected);
   }
 }
 

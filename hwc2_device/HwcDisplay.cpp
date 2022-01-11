@@ -80,12 +80,10 @@ std::string HwcDisplay::Dump() {
   return ss.str();
 }
 
-HwcDisplay::HwcDisplay(ResourceManager *resource_manager, DrmDevice *drm,
-                       hwc2_display_t handle, HWC2::DisplayType type,
-                       DrmHwcTwo *hwc2)
+HwcDisplay::HwcDisplay(DrmConnector *connector, hwc2_display_t handle,
+                       HWC2::DisplayType type, DrmHwcTwo *hwc2)
     : hwc2_(hwc2),
-      resource_manager_(resource_manager),
-      drm_(drm),
+      connector_(connector),
       handle_(handle),
       type_(type),
       color_transform_hint_(HAL_COLOR_TRANSFORM_IDENTITY) {
@@ -98,45 +96,66 @@ HwcDisplay::HwcDisplay(ResourceManager *resource_manager, DrmDevice *drm,
 }
 
 void HwcDisplay::ClearDisplay() {
-  AtomicCommitArgs a_args = {.clear_active_composition = true};
-  compositor_.ExecuteAtomicCommit(a_args);
-}
-
-HWC2::Error HwcDisplay::Init(std::vector<DrmPlane *> *planes) {
-  int display = static_cast<int>(handle_);
-  int ret = compositor_.Init(resource_manager_, display);
-  if (ret) {
-    ALOGE("Failed display compositor init for display %d (%d)", display, ret);
-    return HWC2::Error::NoResources;
+  if (!pipeline_) {
+    ALOGE("%s: Fake mode, should never reach here: ", __func__);
+    return;
   }
 
+  AtomicCommitArgs a_args = {.clear_active_composition = true};
+  pipeline_->compositor->ExecuteAtomicCommit(a_args);
+}
+
+void HwcDisplay::HandleHotplug(bool force_send_connected) {
+  bool old_state = !!pipeline_;
+
+  bool cur_state = false;
+
+  if (connector_->UpdateModes() == 0) {
+    if (connector_->state() == DRM_MODE_CONNECTED) {
+      cur_state = true;
+    }
+  }
+
+  bool state_to_report = cur_state;
+
+  ALOGI("HandleHotplug %s->%s event for connector %s",
+        old_state ? "Plug" : "Unplug", cur_state ? "Plug" : "Unplug",
+        connector_->name().c_str());
+
+  if (!cur_state && handle_ == kPrimaryDisplay) {
+    state_to_report = true; /* Always report Connected for primary displays */
+  }
+
+  if (old_state == cur_state) {
+    if (force_send_connected && state_to_report) {
+      hwc2_->SendHotplugEventToClient(handle_, state_to_report);
+    }
+    return;
+  }
+
+  ALOGI("%s event for connector %s", cur_state ? "Plug" : "Unplug",
+        connector_->name().c_str());
+
+  if (cur_state) {
+    pipeline_ = DrmDisplayPipeline::CreatePipeline(*connector_);
+    Init();
+  } else {
+    flattening_vsync_worker_.Init(nullptr, [](int) {});
+    vsync_worker_.Init(nullptr, [](int) {});
+    pipeline_.reset(); /* Switch to fake mode */
+  }
+  hwc2_->SendHotplugEventToClient(handle_, state_to_report);
+}
+
+HWC2::Error HwcDisplay::Init() {
   // Split up the given display planes into primary and overlay to properly
   // interface with the composition
   char use_overlay_planes_prop[PROPERTY_VALUE_MAX];
   property_get("vendor.hwc.drm.use_overlay_planes", use_overlay_planes_prop,
                "1");
-  bool use_overlay_planes = strtol(use_overlay_planes_prop, nullptr, 10);
-  for (auto &plane : *planes) {
-    if (plane->GetType() == DRM_PLANE_TYPE_PRIMARY)
-      primary_planes_.push_back(plane);
-    else if (use_overlay_planes && (plane)->GetType() == DRM_PLANE_TYPE_OVERLAY)
-      overlay_planes_.push_back(plane);
-  }
 
-  crtc_ = drm_->GetCrtcForDisplay(display);
-  if (!crtc_) {
-    ALOGE("Failed to get crtc for display %d", display);
-    return HWC2::Error::BadDisplay;
-  }
-
-  connector_ = drm_->GetConnectorForDisplay(display);
-  if (!connector_) {
-    ALOGE("Failed to get connector for display %d", display);
-    return HWC2::Error::BadDisplay;
-  }
-
-  ret = vsync_worker_.Init(drm_, display, [this](int64_t timestamp) {
-    const std::lock_guard<std::mutex> lock(hwc2_->callback_lock_);
+  int ret = vsync_worker_.Init(pipeline_.get(), [this](int64_t timestamp) {
+    const std::lock_guard<std::mutex> lock(hwc2_->GetResMan()->GetMasterLock());
     /* vsync callback */
 #if PLATFORM_SDK_VERSION > 29
     if (hwc2_->vsync_2_4_callback_.first != nullptr &&
@@ -153,14 +172,15 @@ HWC2::Error HwcDisplay::Init(std::vector<DrmPlane *> *planes) {
                                    timestamp);
     }
   });
-  if (ret) {
-    ALOGE("Failed to create event worker for d=%d %d\n", display, ret);
+  if (ret != 0 && ret != -EALREADY) {
+    ALOGE("Failed to create event worker for d=%d %d\n", int(handle_), ret);
     return HWC2::Error::BadDisplay;
   }
 
   ret = flattening_vsync_worker_
-            .Init(drm_, display, [this](int64_t /*timestamp*/) {
-              const std::lock_guard<std::mutex> lock(hwc2_->callback_lock_);
+            .Init(pipeline_.get(), [this](int64_t /*timestamp*/) {
+              std::unique_lock<std::mutex> lock(
+                  hwc2_->GetResMan()->GetMasterLock());
               /* Frontend flattening */
               if (flattenning_state_ >
                       ClientFlattenningState::ClientRefreshRequested &&
@@ -173,14 +193,14 @@ HWC2::Error HwcDisplay::Init(std::vector<DrmPlane *> *planes) {
                 flattening_vsync_worker_.VSyncControl(false);
               }
             });
-  if (ret) {
-    ALOGE("Failed to create event worker for d=%d %d\n", display, ret);
+  if (ret != 0 && ret != -EALREADY) {
+    ALOGE("Failed to create event worker for d=%d %d\n", int(handle_), ret);
     return HWC2::Error::BadDisplay;
   }
 
   ret = BackendManager::GetInstance().SetBackendForDisplay(this);
   if (ret) {
-    ALOGE("Failed to set backend for d=%d %d\n", display, ret);
+    ALOGE("Failed to set backend for d=%d %d\n", int(handle_), ret);
     return HWC2::Error::BadDisplay;
   }
 
@@ -229,6 +249,12 @@ HWC2::Error HwcDisplay::GetActiveConfig(hwc2_config_t *config) const {
 HWC2::Error HwcDisplay::GetChangedCompositionTypes(uint32_t *num_elements,
                                                    hwc2_layer_t *layers,
                                                    int32_t *types) {
+  if (!pipeline_) {
+    /* Fake mode */
+    *num_elements = 0;
+    return HWC2::Error::None;
+  }
+
   uint32_t num_changes = 0;
   for (std::pair<const hwc2_layer_t, HwcLayer> &l : layers_) {
     if (l.second.IsTypeChanged()) {
@@ -247,8 +273,13 @@ HWC2::Error HwcDisplay::GetChangedCompositionTypes(uint32_t *num_elements,
 HWC2::Error HwcDisplay::GetClientTargetSupport(uint32_t width, uint32_t height,
                                                int32_t /*format*/,
                                                int32_t dataspace) {
-  std::pair<uint32_t, uint32_t> min = drm_->min_resolution();
-  std::pair<uint32_t, uint32_t> max = drm_->max_resolution();
+  if (!pipeline_) {
+    /* Fake mode */
+    return HWC2::Error::None;
+  }
+
+  std::pair<uint32_t, uint32_t> min = pipeline_->device->min_resolution();
+  std::pair<uint32_t, uint32_t> max = pipeline_->device->max_resolution();
 
   if (width < min.first || height < min.second)
     return HWC2::Error::Unsupported;
@@ -276,10 +307,41 @@ HWC2::Error HwcDisplay::GetColorModes(uint32_t *num_modes, int32_t *modes) {
 HWC2::Error HwcDisplay::GetDisplayAttribute(hwc2_config_t config,
                                             int32_t attribute_in,
                                             int32_t *value) {
+  auto attribute = static_cast<HWC2::Attribute>(attribute_in);
+  if (!pipeline_) {
+    /* Fake mode */
+    switch (attribute) {
+      case HWC2::Attribute::Width:
+        *value = 1024;
+        break;
+      case HWC2::Attribute::Height:
+        *value = 768;
+        break;
+      case HWC2::Attribute::VsyncPeriod:
+        // in nanoseconds
+        *value = 16666666;
+        break;
+      case HWC2::Attribute::DpiY:
+      case HWC2::Attribute::DpiX:
+        // Dots per 1000 inches
+        *value = 300000;
+        break;
+#if PLATFORM_SDK_VERSION > 29
+      case HWC2::Attribute::ConfigGroup:
+        *value = 1;
+        break;
+#endif
+      default:
+        *value = -1;
+        return HWC2::Error::BadConfig;
+    }
+    return HWC2::Error::None;
+  }
+
   int conf = static_cast<int>(config);
 
   if (configs_.hwc_configs.count(conf) == 0) {
-    ALOGE("Could not find active mode for %d", conf);
+    ALOGE("Could not find mode #%d", conf);
     return HWC2::Error::BadConfig;
   }
 
@@ -288,7 +350,6 @@ HWC2::Error HwcDisplay::GetDisplayAttribute(hwc2_config_t config,
   static const int32_t kUmPerInch = 25400;
   uint32_t mm_width = connector_->mm_width();
   uint32_t mm_height = connector_->mm_height();
-  auto attribute = static_cast<HWC2::Attribute>(attribute_in);
   switch (attribute) {
     case HWC2::Attribute::Width:
       *value = static_cast<int>(hwc_config.mode.h_display());
@@ -358,7 +419,7 @@ HWC2::Error HwcDisplay::GetDisplayConfigs(uint32_t *num_configs,
 
 HWC2::Error HwcDisplay::GetDisplayName(uint32_t *size, char *name) {
   std::ostringstream stream;
-  stream << "display-" << connector_->id();
+  stream << "display-" << connector_->GetId();
   std::string string = stream.str();
   size_t length = string.length();
   if (!name) {
@@ -406,6 +467,12 @@ HWC2::Error HwcDisplay::GetHdrCapabilities(uint32_t *num_types,
 HWC2::Error HwcDisplay::GetReleaseFences(uint32_t *num_elements,
                                          hwc2_layer_t *layers,
                                          int32_t *fences) {
+  if (!pipeline_) {
+    /* Fake mode */
+    *num_elements = 0;
+    return HWC2::Error::None;
+  }
+
   uint32_t num_layers = 0;
 
   for (std::pair<const hwc2_layer_t, HwcLayer> &l : layers_) {
@@ -426,6 +493,11 @@ HWC2::Error HwcDisplay::GetReleaseFences(uint32_t *num_elements,
 }
 
 HWC2::Error HwcDisplay::CreateComposition(AtomicCommitArgs &a_args) {
+  if (!pipeline_) {
+    ALOGE("%s: Display in fake mode, should never reach here", __func__);
+    return HWC2::Error::None;
+  }
+
   // order the layers by z-order
   bool use_client_layer = false;
   uint32_t client_z_order = UINT32_MAX;
@@ -456,7 +528,7 @@ HWC2::Error HwcDisplay::CreateComposition(AtomicCommitArgs &a_args) {
   for (std::pair<const uint32_t, HwcLayer *> &l : z_map) {
     DrmHwcLayer layer;
     l.second->PopulateDrmLayer(&layer);
-    int ret = layer.ImportBuffer(drm_);
+    int ret = layer.ImportBuffer(pipeline_->device);
     if (ret) {
       ALOGE("Failed to import layer, ret=%d", ret);
       return HWC2::Error::NoResources;
@@ -464,7 +536,7 @@ HWC2::Error HwcDisplay::CreateComposition(AtomicCommitArgs &a_args) {
     composition_layers.emplace_back(std::move(layer));
   }
 
-  auto composition = std::make_shared<DrmDisplayComposition>(crtc_);
+  auto composition = std::make_shared<DrmDisplayComposition>(pipeline_->crtc);
 
   // TODO(nobody): Don't always assume geometry changed
   int ret = composition->SetLayers(composition_layers.data(),
@@ -474,8 +546,12 @@ HWC2::Error HwcDisplay::CreateComposition(AtomicCommitArgs &a_args) {
     return HWC2::Error::BadLayer;
   }
 
-  std::vector<DrmPlane *> primary_planes(primary_planes_);
-  std::vector<DrmPlane *> overlay_planes(overlay_planes_);
+  std::vector<DrmPlane *> primary_planes;
+  primary_planes.emplace_back(pipeline_->primary_plane->object);
+  std::vector<DrmPlane *> overlay_planes;
+  for (const auto &owned_plane : pipeline_->overlay_planes) {
+    overlay_planes.emplace_back(owned_plane->object);
+  }
   ret = composition->Plan(&primary_planes, &overlay_planes);
   if (ret) {
     ALOGV("Failed to plan the composition ret=%d", ret);
@@ -486,7 +562,7 @@ HWC2::Error HwcDisplay::CreateComposition(AtomicCommitArgs &a_args) {
   if (staged_mode) {
     a_args.display_mode = *staged_mode;
   }
-  ret = compositor_.ExecuteAtomicCommit(a_args);
+  ret = pipeline_->compositor->ExecuteAtomicCommit(a_args);
 
   if (ret) {
     if (!a_args.test_only)
@@ -505,6 +581,11 @@ HWC2::Error HwcDisplay::CreateComposition(AtomicCommitArgs &a_args) {
  * https://cs.android.com/android/platform/superproject/+/android-11.0.0_r3:hardware/libhardware/include/hardware/hwcomposer2.h;l=1805
  */
 HWC2::Error HwcDisplay::PresentDisplay(int32_t *present_fence) {
+  if (!pipeline_) {
+    /* Fake mode */
+    *present_fence = -1;
+    return HWC2::Error::None;
+  }
   HWC2::Error ret{};
 
   ++total_stats_.total_frames_;
@@ -530,6 +611,11 @@ HWC2::Error HwcDisplay::PresentDisplay(int32_t *present_fence) {
 }
 
 HWC2::Error HwcDisplay::SetActiveConfig(hwc2_config_t config) {
+  if (!pipeline_) {
+    /* fake mode */
+    return HWC2::Error::None;
+  }
+
   int conf = static_cast<int>(config);
 
   if (configs_.hwc_configs.count(conf) == 0) {
@@ -619,6 +705,11 @@ HWC2::Error HwcDisplay::SetOutputBuffer(buffer_handle_t /*buffer*/,
 }
 
 HWC2::Error HwcDisplay::SetPowerMode(int32_t mode_in) {
+  if (!pipeline_) {
+    /* Fake mode */
+    return HWC2::Error::None;
+  }
+
   auto mode = static_cast<HWC2::PowerMode>(mode_in);
   AtomicCommitArgs a_args{};
 
@@ -633,7 +724,7 @@ HWC2::Error HwcDisplay::SetPowerMode(int32_t mode_in) {
        * true, as the next composition frame will implicitly activate
        * the display
        */
-      return compositor_.ActivateDisplayUsingDPMS() == 0
+      return pipeline_->compositor->ActivateDisplayUsingDPMS() == 0
                  ? HWC2::Error::None
                  : HWC2::Error::BadParameter;
       break;
@@ -645,7 +736,7 @@ HWC2::Error HwcDisplay::SetPowerMode(int32_t mode_in) {
       return HWC2::Error::BadParameter;
   };
 
-  int err = compositor_.ExecuteAtomicCommit(a_args);
+  int err = pipeline_->compositor->ExecuteAtomicCommit(a_args);
   if (err) {
     ALOGE("Failed to apply the dpms composition err=%d", err);
     return HWC2::Error::BadParameter;
@@ -660,6 +751,11 @@ HWC2::Error HwcDisplay::SetVsyncEnabled(int32_t enabled) {
 
 HWC2::Error HwcDisplay::ValidateDisplay(uint32_t *num_types,
                                         uint32_t *num_requests) {
+  if (!pipeline_) {
+    /* Fake mode */
+    *num_types = *num_requests = 0;
+    return HWC2::Error::None;
+  }
   return backend_->ValidateDisplay(this, num_types, num_requests);
 }
 
@@ -751,7 +847,7 @@ HWC2::Error HwcDisplay::GetDisplayIdentificationData(uint8_t *outPort,
   } else {
     *outDataSize = blob->length;
   }
-  *outPort = connector_->id();
+  *outPort = connector_->GetId();
 
   return HWC2::Error::None;
 }

@@ -26,7 +26,7 @@
 #include <functional>
 #include <map>
 
-#include "DrmDevice.h"
+#include "DrmDisplayPipeline.h"
 #include "utils/Worker.h"
 
 namespace android {
@@ -36,7 +36,7 @@ class VSyncWorker : public Worker {
   VSyncWorker();
   ~VSyncWorker() override = default;
 
-  auto Init(DrmDevice *drm, int display,
+  auto Init(DrmDisplayPipeline *pipe,
             std::function<void(uint64_t /*timestamp*/)> callback) -> int;
 
   void VSyncControl(bool enabled);
@@ -46,13 +46,12 @@ class VSyncWorker : public Worker {
 
  private:
   int64_t GetPhasedVSync(int64_t frame_ns, int64_t current) const;
-  int SyntheticWaitVBlank(int64_t *timestamp);
+  int SyntheticWaitVBlank(int64_t *timestamp, float refresh);
 
-  DrmDevice *drm_;
+  DrmDisplayPipeline *pipeline_{};
 
   std::function<void(uint64_t /*timestamp*/)> callback_;
 
-  int display_;
   std::atomic_bool enabled_;
   int64_t last_timestamp_;
 };

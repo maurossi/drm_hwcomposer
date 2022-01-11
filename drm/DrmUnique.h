@@ -84,4 +84,67 @@ auto inline MakeDrmModeResUnique(int fd) {
                           [](drmModeRes *it) { drmModeFreeResources(it); });
 }
 
+template <typename T>
+struct DrmClassOwningObject {
+  explicit DrmClassOwningObject(T *obj, void *owner)
+      : object(obj), obj_owner(owner){};
+  ~DrmClassOwningObject() {
+    object->owned.reset();
+  }
+  
+  T *object;
+  void *obj_owner;
+};
+
+template <typename T>
+auto inline TakeDrmObject(T *obj, void *owner)
+    -> std::shared_ptr<DrmClassOwningObject<T>> {
+  auto owned = obj->owned.lock();
+  if (owned) {
+    if (owned->object == obj && owner == owned->obj_owner) {
+      return owned;
+    }
+
+    return {};
+  }
+  owned = std::shared_ptr<DrmClassOwningObject<T>>(
+      new DrmClassOwningObject<T>(obj, owner));
+  obj->owned = owned;
+  return owned;
+}
+
+template <typename T>
+auto inline OwnDrmObject(T *obj, void *owner)
+    -> std::shared_ptr<DrmClassOwningObject<T>> {
+  auto owned = obj->owned.lock();
+  if (owned) {
+    return {};
+  }
+  owned = std::shared_ptr<DrmClassOwningObject<T>>(
+      new DrmClassOwningObject<T>(obj, owner));
+  obj->owned = owned;
+  return owned;
+}
+
+namespace android {
+
+class DrmConnector;
+class DrmCrtc;
+class DrmEncoder;
+class DrmPlane;
+
+using DrmConnectorOwner = std::shared_ptr<DrmClassOwningObject<DrmConnector>>;
+using DrmConnectorOwnerWeak = std::weak_ptr<DrmClassOwningObject<DrmConnector>>;
+
+using DrmCrtcOwner = std::shared_ptr<DrmClassOwningObject<DrmCrtc>>;
+using DrmCrtcOwnerWeak = std::weak_ptr<DrmClassOwningObject<DrmCrtc>>;
+
+using DrmEncoderOwner = std::shared_ptr<DrmClassOwningObject<DrmEncoder>>;
+using DrmEncoderOwnerWeak = std::weak_ptr<DrmClassOwningObject<DrmEncoder>>;
+
+using DrmPlaneOwner = std::shared_ptr<DrmClassOwningObject<DrmPlane>>;
+using DrmPlaneOwnerWeak = std::weak_ptr<DrmClassOwningObject<DrmPlane>>;
+
+}  // namespace android
+
 #endif

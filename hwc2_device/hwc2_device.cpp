@@ -14,13 +14,27 @@
  * limitations under the License.
  */
 
+// NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
+//#define LOG_NDEBUG 0 // Uncomment to see HWC2 API calls in logcat
+
 #define LOG_TAG "hwc2-device"
+
+#include <cinttypes>
 
 #include "DrmHwcTwo.h"
 #include "backend/Backend.h"
 #include "utils/log.h"
 
 namespace android {
+
+static std::string GetFuncName(const char *pretty_function) {
+  std::string str(pretty_function);
+  const char *start = "func = &";
+  size_t p1 = str.find(start);
+  p1 += strlen(start);
+  size_t p2 = str.find(',', p1);
+  return str.substr(p1, p2 - p1);
+}
 
 struct Drmhwc2Device : hwc2_device {
   DrmHwcTwo drmhwctwo;
@@ -40,14 +54,20 @@ static hwc2_function_pointer_t ToHook(T function) {
 
 template <typename T, typename HookType, HookType func, typename... Args>
 static T DeviceHook(hwc2_device_t *dev, Args... args) {
+  ALOGV("Device hook: %s", GetFuncName(__PRETTY_FUNCTION__).c_str());
   DrmHwcTwo *hwc = ToDrmHwcTwo(dev);
+  const std::lock_guard<std::mutex> lock(hwc->GetResMan()->GetMasterLock());
   return static_cast<T>(((*hwc).*func)(std::forward<Args>(args)...));
 }
 
 template <typename HookType, HookType func, typename... Args>
 static int32_t DisplayHook(hwc2_device_t *dev, hwc2_display_t display_handle,
                            Args... args) {
-  HwcDisplay *display = DrmHwcTwo::GetDisplay(ToDrmHwcTwo(dev), display_handle);
+  ALOGV("Display #%" PRIu64 " hook: %s", display_handle,
+        GetFuncName(__PRETTY_FUNCTION__).c_str());
+  DrmHwcTwo *hwc = ToDrmHwcTwo(dev);
+  const std::lock_guard<std::mutex> lock(hwc->GetResMan()->GetMasterLock());
+  HwcDisplay *display = DrmHwcTwo::GetDisplay(hwc, display_handle);
   if (!display)
     return static_cast<int32_t>(HWC2::Error::BadDisplay);
 
@@ -57,7 +77,11 @@ static int32_t DisplayHook(hwc2_device_t *dev, hwc2_display_t display_handle,
 template <typename HookType, HookType func, typename... Args>
 static int32_t LayerHook(hwc2_device_t *dev, hwc2_display_t display_handle,
                          hwc2_layer_t layer_handle, Args... args) {
-  HwcDisplay *display = DrmHwcTwo::GetDisplay(ToDrmHwcTwo(dev), display_handle);
+  ALOGV("Display #%" PRIu64 " Layer: #%" PRIu64 " hook: %s", display_handle,
+        layer_handle, GetFuncName(__PRETTY_FUNCTION__).c_str());
+  DrmHwcTwo *hwc = ToDrmHwcTwo(dev);
+  const std::lock_guard<std::mutex> lock(hwc->GetResMan()->GetMasterLock());
+  HwcDisplay *display = DrmHwcTwo::GetDisplay(hwc, display_handle);
   if (!display)
     return static_cast<int32_t>(HWC2::Error::BadDisplay);
 
@@ -358,12 +382,6 @@ static int HookDevOpen(const struct hw_module_t *module, const char *name,
   ctx->common.module = (hw_module_t *)module;
   ctx->getCapabilities = HookDevGetCapabilities;
   ctx->getFunction = HookDevGetFunction;
-
-  HWC2::Error err = ctx->drmhwctwo.Init();
-  if (err != HWC2::Error::None) {
-    ALOGE("Failed to initialize DrmHwcTwo err=%d\n", err);
-    return -EINVAL;
-  }
 
   *dev = &ctx.release()->common;
 

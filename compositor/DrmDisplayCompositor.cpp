@@ -40,32 +40,6 @@
 
 namespace android {
 
-auto DrmDisplayCompositor::Init(ResourceManager *resource_manager, int display)
-    -> int {
-  resource_manager_ = resource_manager;
-  display_ = display;
-  DrmDevice *drm = resource_manager_->GetDrmDevice(display);
-  if (!drm) {
-    ALOGE("Could not find drmdevice for display");
-    return -EINVAL;
-  }
-
-  initialized_ = true;
-  return 0;
-}
-
-std::unique_ptr<DrmDisplayComposition>
-DrmDisplayCompositor::CreateInitializedComposition() const {
-  DrmDevice *drm = resource_manager_->GetDrmDevice(display_);
-  DrmCrtc *crtc = drm->GetCrtcForDisplay(display_);
-  if (!crtc) {
-    ALOGE("Failed to find crtc for display = %d", display_);
-    return {};
-  }
-
-  return std::make_unique<DrmDisplayComposition>(crtc);
-}
-
 // NOLINTNEXTLINE (readability-function-cognitive-complexity): Fixme
 auto DrmDisplayCompositor::CommitFrame(AtomicCommitArgs &args) -> int {
   ATRACE_CALL();
@@ -92,18 +66,9 @@ auto DrmDisplayCompositor::CommitFrame(AtomicCommitArgs &args) -> int {
 
   auto new_frame_state = NewFrameState();
 
-  DrmDevice *drm = resource_manager_->GetDrmDevice(display_);
-
-  DrmConnector *connector = drm->GetConnectorForDisplay(display_);
-  if (!connector) {
-    ALOGE("Could not locate connector for display %d", display_);
-    return -ENODEV;
-  }
-  DrmCrtc *crtc = drm->GetCrtcForDisplay(display_);
-  if (!crtc) {
-    ALOGE("Could not locate crtc for display %d", display_);
-    return -ENODEV;
-  }
+  auto *drm = pipe_->device;
+  auto *connector = pipe_->connector;
+  auto *crtc = pipe_->crtc;
 
   auto pset = MakeDrmModeAtomicReqUnique();
   if (!pset) {
@@ -120,14 +85,13 @@ auto DrmDisplayCompositor::CommitFrame(AtomicCommitArgs &args) -> int {
   if (args.active) {
     new_frame_state.crtc_active_state = *args.active;
     if (!crtc->active_property().AtomicSet(*pset, *args.active) ||
-        !connector->crtc_id_property().AtomicSet(*pset, crtc->id())) {
+        !connector->crtc_id_property().AtomicSet(*pset, crtc->GetId())) {
       return -EINVAL;
     }
   }
 
   if (args.display_mode) {
-    new_frame_state.mode_blob = args.display_mode.value().CreateModeBlob(
-        *resource_manager_->GetDrmDevice(display_));
+    new_frame_state.mode_blob = args.display_mode.value().CreateModeBlob(*drm);
 
     if (!new_frame_state.mode_blob) {
       ALOGE("Failed to create mode_blob");
@@ -167,7 +131,8 @@ auto DrmDisplayCompositor::CommitFrame(AtomicCommitArgs &args) -> int {
       auto &v = unused_planes;
       v.erase(std::remove(v.begin(), v.end(), plane), v.end());
 
-      if (plane->AtomicSetState(*pset, layer, source_layer, crtc->id()) != 0) {
+      if (plane->AtomicSetState(*pset, layer, source_layer, crtc->GetId()) !=
+          0) {
         return -EINVAL;
       }
     }
@@ -219,12 +184,14 @@ auto DrmDisplayCompositor::ExecuteAtomicCommit(AtomicCommitArgs &args) -> int {
 
   if (!args.test_only) {
     if (err) {
-      ALOGE("Composite failed for display %d", display_);
+      ALOGE("Composite failed for pipeline %s",
+            pipe_->connector->name().c_str());
       // Disable the hw used by the last active composition. This allows us to
       // signal the release fences from that composition to avoid hanging.
       AtomicCommitArgs cl_args = {.clear_active_composition = true};
       if (CommitFrame(cl_args)) {
-        ALOGE("Failed to clean-up active composition for display %d", display_);
+        ALOGE("Failed to clean-up active composition for pipeline %s",
+              pipe_->connector->name().c_str());
       }
       return err;
     }
@@ -234,19 +201,10 @@ auto DrmDisplayCompositor::ExecuteAtomicCommit(AtomicCommitArgs &args) -> int {
 }  // namespace android
 
 auto DrmDisplayCompositor::ActivateDisplayUsingDPMS() -> int {
-  auto *drm = resource_manager_->GetDrmDevice(display_);
-  auto *connector = drm->GetConnectorForDisplay(display_);
-  if (connector == nullptr) {
-    ALOGE("Could not locate connector for display %d", display_);
-    return -ENODEV;
-  }
-
-  if (connector->dpms_property()) {
-    drmModeConnectorSetProperty(drm->fd(), connector->id(),
-                                connector->dpms_property().id(),
-                                DRM_MODE_DPMS_ON);
-  }
-  return 0;
+  return drmModeConnectorSetProperty(pipe_->device->fd(),
+                                     pipe_->connector->GetId(),
+                                     pipe_->connector->dpms_property().id(),
+                                     DRM_MODE_DPMS_ON);
 }
 
 }  // namespace android

@@ -30,16 +30,16 @@ class ResourceManager {
   ResourceManager();
   ResourceManager(const ResourceManager &) = delete;
   ResourceManager &operator=(const ResourceManager &) = delete;
+  ResourceManager(const ResourceManager &&) = delete;
+  ResourceManager &&operator=(const ResourceManager &&) = delete;
   ~ResourceManager();
 
   int Init();
-  DrmDevice *GetDrmDevice(int display);
-  const std::vector<std::unique_ptr<DrmDevice>> &GetDrmDevices() const {
-    return drms_;
+
+  auto GetAvailableConnectors() {
+    return connectors_;
   }
-  int GetDisplayCount() const {
-    return num_displays_;
-  }
+
   bool ForcedScalingWithGpu() const {
     return scale_with_gpu_;
   }
@@ -48,15 +48,24 @@ class ResourceManager {
     return &uevent_listener_;
   }
 
+  auto &GetMasterLock() {
+    return master_lock_;
+  }
+
  private:
   int AddDrmDevice(std::string const &path);
 
-  int num_displays_;
   std::vector<std::unique_ptr<DrmDevice>> drms_;
+
+  std::map<int, DrmConnectorOwner> connectors_;
 
   bool scale_with_gpu_{};
 
   UEventListener uevent_listener_;
+
+  std::mutex master_lock_;
+
+  void ReorderConnectors();
 };
 }  // namespace android
 

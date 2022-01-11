@@ -39,7 +39,7 @@ class DrmPlane {
 
   int Init();
 
-  bool GetCrtcSupported(const DrmCrtc &crtc) const;
+  bool IsCrtcSupported(const DrmCrtc &crtc) const;
   bool IsValidForLayer(DrmHwcLayer *layer);
 
   uint32_t GetType() const;
@@ -51,6 +51,13 @@ class DrmPlane {
                       uint32_t crtc_id) -> int;
   auto AtomicDisablePlane(drmModeAtomicReq &pset) -> int;
   const DrmProperty &GetZPosProperty() const;
+
+  auto GetId() const {
+    return id_;
+  }
+
+  // NOLINTNEXTLINE(cppcoreguidelines-non-private-member-variables-in-classes_
+  DrmPlaneOwnerWeak owned;
 
  private:
   DrmDevice *drm_;
