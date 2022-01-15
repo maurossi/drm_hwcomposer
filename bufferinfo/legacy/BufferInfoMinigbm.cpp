@@ -89,8 +89,8 @@ int BufferInfoMinigbm::ConvertBoInfo(buffer_handle_t handle, hwc_drm_bo_t *bo) {
   bo->height = height;
 
   bo->hal_format = droid_format;
-
-  bo->format = info.drm_fourcc;
+  /* avoid using alpha bits for the framebuffer to support older GPUs */ 
+  bo->format = info.drm_fourcc == DRM_FORMAT_ABGR8888 ? DRM_FORMAT_XBGR8888 : info.drm_fourcc;
   bo->usage = usage;
 
   for (int i = 0; i < info.num_fds; i++) {
