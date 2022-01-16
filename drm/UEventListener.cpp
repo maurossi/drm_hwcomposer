@@ -79,7 +79,7 @@ void UEventListener::Routine() {
 
     bool drm_event = false;
     bool hotplug_event = false;
-    for (uint32_t i = 0; i < ret;) {
+    for (ssize_t i = 0; i < ret;) {
       char *event = buffer + i;
       if (strcmp(event, "DEVTYPE=drm_minor") != 0)
         drm_event = true;
